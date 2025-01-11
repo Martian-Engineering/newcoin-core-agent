@@ -9,7 +9,7 @@ export type WSState = {
   send: (msg: any) => void;
 };
 
-export const newgraphWebsocketsClientManager = (upd: (wsServer: string, token: string) => string) => {
+export const newgraphWebsocketsClientManager = () => {
   const state = {
     socket: null,
   } as WSState;
@@ -59,7 +59,18 @@ export const newgraphWebsocketsClientManager = (upd: (wsServer: string, token: s
 
   const logConnected = () => console.log("Websockets client connected")
   const logDisconnected = () => console.log("Websockets client disconnected")
-  const logError = (err: any) => console.log(err);
+    const logError = (err: any) => {
+      const details = {
+        message: err.message,
+        type: err.type,
+        code: (err as any)?.code,
+        url: state.socket?.url,
+        status: (err as any)?.status,
+        headers: (err as any)?.headers,
+        raw: err
+      };
+      console.error("WebSocket Error:", details);
+    };
 
   const sendQueued = () => {
     let msg;
@@ -79,10 +90,10 @@ export const newgraphWebsocketsClientManager = (upd: (wsServer: string, token: s
     _token = token;
 
 
-    const url = upd(WEBSOCKETS_SERVER, token);
-
-    if (state.url === url) return;
-
+    const url = `${WEBSOCKETS_SERVER}?token=${encodeURIComponent(token)}`;
+    if (state.url === url) {
+      return;
+    }
     state.url = url;
 
     if (state.socket) {
@@ -98,7 +109,17 @@ export const newgraphWebsocketsClientManager = (upd: (wsServer: string, token: s
     stopPing();
 
     if (token && url) {
-      state.socket = new WebSocket(url);
+      // If an upd function is provided, use that, otherwise use default URL with token param
+      // Use exact URL format from successful Chrome connection
+      const tokenParam = encodeURIComponent(`newsafe ${token}`);
+      const url = `${WEBSOCKETS_SERVER}?token=${tokenParam}`;
+      console.log("Attempting to connect to WebSocket...");
+      state.socket = new WebSocket(url, {
+        headers: {
+          'Origin': 'https://os.newcoin.org',
+          'Sec-WebSocket-Extensions': 'permessage-deflate, client_max_window_bits'
+        }
+      });
 
       // subscribe to events
       (Object.keys(eventHandlers)  as (keyof WebSocketEventMap)[])

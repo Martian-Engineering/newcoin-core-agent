@@ -5,75 +5,106 @@ import { NewcoinWriterAgent } from ".";
 export type NewcoinAgentHandlerResponse = string | { content: string, filesPaths: string[] };
 export type NewcoinAgentHandler = (msg: string, agent: ReturnType<typeof NewcoinWriterAgent>) => NewcoinAgentHandlerResponse | Promise<NewcoinAgentHandlerResponse>;
 
-export const NewcoinListener = (token: string, listener?: NewcoinAgentHandler) => {
+export const NewcoinListener = async (token: string, listener?: NewcoinAgentHandler) => {
+    // First verify authentication and get user info
+    const writer = NewcoinWriterAgent(token);
     const user: {
         current: UserReadPrivateResponse
     } = { current: {} }
-    const writer = NewcoinWriterAgent(token); // if a tree fell in a wood and someone heard it but said nothing, did it even happen?
 
-    const currentP = writer.current().then((u) => {
-        user.current = u;
-        return u;
-    });
+    try {
+        // First authenticate and get user info
+        const currentUser = await writer.current();
+        user.current = currentUser;
+        console.log("Successfully authenticated as:", currentUser.username);
 
-    const newgraphWebsocketsClient = newgraphWebsocketsClientManager((wsServer, token) => `${wsServer}?token=${encodeURIComponent(token)}`);;
+        // Now establish WebSocket connection
+        const newgraphWebsocketsClient = newgraphWebsocketsClientManager();
+        
+        // Initialize stats tracking
+        const stats = {
+            totalStringSize: 0,
+            messagesCount: 0
+        };
 
-    newgraphWebsocketsClient.toggle(token);
-    const stats = {
-        totalStringSize: 0,
-        messagesCount: 0
-    }
-
-    newgraphWebsocketsClient.socket?.addEventListener("open", () => {
-        currentP.then(() => {
-            console.log(`Listening as ${user.current.username}`)
+        // Set up event handlers
+        newgraphWebsocketsClient.socket?.addEventListener("open", () => {
+            console.log(`Connected and listening as ${user.current.username}`);
         });
-    });
 
-    newgraphWebsocketsClient.socket?.addEventListener("message",
-        async (msg) => {
+        newgraphWebsocketsClient.socket?.addEventListener("message", async (msg) => {
+            // Track message stats
             const msgSize = msg.data.toString().length;
             stats.totalStringSize += msgSize;
             stats.messagesCount += 1;
 
-            if (msg.data == "pong") { return Promise.resolve() };
+            // Handle pong messages
+            if (msg.data == "pong") { 
+                return Promise.resolve(); 
+            }
 
-            const data: { type: string, payload: { message: string, post: PostReadResponse, folder: MoodReadResponse } } = JSON.parse(msg.data.toString());
+            try {
+                const data: { 
+                    type: string, 
+                    payload: { 
+                        message: string, 
+                        post: PostReadResponse, 
+                        folder: MoodReadResponse 
+                    } 
+                } = JSON.parse(msg.data.toString());
 
-            // console.log("replying to: ", data.payload?.post?.content || "not replying")
+                // Handle posts in folders
+                if (data.type == "newgraph" && data?.payload?.message == "post_in_folder") {
+                    const text = (data.payload?.post?.content || "").trim();
 
-            if (data.type == "newgraph" && data?.payload?.message == "post_in_folder") {
-                const text = (data.payload?.post?.content || "").trim()
+                    // Skip if not addressed to this agent
+                    if (!text.startsWith(`/${user.current.username}`)) {
+                        return Promise.resolve();
+                    }
 
-                if (!text.startsWith(`/${user.current.username}`)) //"/igorrubinovich.nco"))
-                    return Promise.resolve();
+                    // Process with listener if provided
+                    if (listener) {
+                        try {
+                            // Remove the username prefix from the message
+                            const cleanedText = text.trim().replace(new RegExp(`/${user.current.username}`), "");
+                            const _r = listener(cleanedText, writer);
+                            const r = _r instanceof Promise ? await _r : _r;
 
-                if (listener) {
-                    const _r = listener(text.trim().replace(new RegExp(`/${user.current.username}`), ""), writer);
-                    const r = _r instanceof Promise ? await _r : _r;
-
-                    if (typeof r == "string") {
-                        // await NewcoinWriter(agents[0]).postMessage(data.payload.folder.id!, "Hi, I'm a too basic bot. Cant tell you much but I can listen")
-                        await writer.postMessage(data.payload.folder.id!, r);
-                        console.log("replied to: ", data.payload.post.content, 'in folder', data.payload.folder.id!)
-                    } else {
-                        const filesPaths = r.filesPaths || [undefined];
-                        for (let i = 0; i < filesPaths.length; i++) {
-                            const fp = filesPaths[i];
-                            console.log("Uploading file", fp);
-                            await writer.postMessage(data.payload.folder.id!, i ? "" : r.content, fp);
+                            if (typeof r == "string") {
+                                // Simple text response
+                                await writer.postMessage(data.payload.folder.id!, r);
+                                console.log("Replied with text to:", data.payload.post.content, 'in folder', data.payload.folder.id!);
+                            } else {
+                                // Response with files
+                                const filesPaths = r.filesPaths || [undefined];
+                                for (let i = 0; i < filesPaths.length; i++) {
+                                    const fp = filesPaths[i];
+                                    console.log("Uploading file", fp);
+                                    await writer.postMessage(data.payload.folder.id!, i ? "" : r.content, fp);
+                                }
+                            }
+                        } catch (error) {
+                            console.error("Error in listener handler:", error);
                         }
                     }
                 }
-
-                // const p = await agents[0].api.post.postCreate({ content: "Hi, I'm a too basic bot. Cant tell you much but I can listen", contentType: "text/html" })
+            } catch (error) {
+                console.error("Error processing message:", error);
             }
+        });
 
-        })
-    return {
-        get stats() {
-            return stats;
-        },
-        wsclient: newgraphWebsocketsClient
+        // Start the WebSocket connection
+        newgraphWebsocketsClient.toggle(token);
+        // Return client interface
+        return {
+            get stats() {
+                return stats;
+            },
+            wsclient: newgraphWebsocketsClient
+        };
+
+    } catch (error) {
+        console.error("Failed to initialize NewcoinListener:", error);
+        throw error;
     }
 }

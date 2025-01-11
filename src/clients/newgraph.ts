@@ -12,7 +12,7 @@ export const NewgraphApi = (() => {
       _api = new CreatorApi({
         baseUrl,
         securityWorker: (securityData: { token: string } | null) => {
-          return !securityData ? {} : { headers: { Authorization: securityData.token } };
+          return !securityData ? {} : { headers: { Authorization: `newsafe ${securityData.token}` } };
         },
       });
       return _api;
@@ -26,10 +26,17 @@ export const NewgraphApi = (() => {
     },
     async authorize(): Promise<UserReadPrivateResponse> {
       try {
+        console.log("Sending current user request with token:", _token.substring(0, 20) + "...");
         const r = await _api.user.currentList();
+        console.log("Current user response:", r.data);
         return r.data;
       } catch (_ex) {
         const ex: { error: ErrorResponse } = _ex as any;
+        console.error("Authorization failed:", {
+          error: ex.error,
+          status: (ex as any)?.status,
+          headers: (ex as any)?.headers
+        });
         throw ex;
       }
     },
